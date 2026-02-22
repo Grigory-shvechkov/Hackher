@@ -21,11 +21,11 @@ CORS(app)
 # Configuration
 # ------------------------
 CAM_COUNT = 3
-FRAME_WIDTH = 320
-FRAME_HEIGHT = 240
-JPEG_QUALITY = 50
-STREAM_FPS = 30        # FPS for MJPEG streaming
-YOLO_SKIP = 5        
+FRAME_WIDTH = 640       # upscale for better detection
+FRAME_HEIGHT = 480
+JPEG_QUALITY = 75       # better quality for YOLO
+STREAM_FPS = 30
+YOLO_SKIP = 5      
 
 # ------------------------
 # Load YOLO

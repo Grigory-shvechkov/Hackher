@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { fade } from "svelte/transition";
+  import * as Accordion from "$lib/components/ui/accordion/index.js";
 
   const serverBase = "http://172.31.88.33:5000";
   const CAM_COUNT = 3;
@@ -28,55 +29,61 @@
 </script>
 
 <style>
-  /* Global body background */
   :global(body) {
     margin: 0;
     font-family: 'Segoe UI', sans-serif;
-    background: #1a1a1a; /* dark grey */
+    background: #1a1a1a;
     color: #fff;
   }
 
-  /* Page container */
   .page-container {
     display: flex;
-    justify-content: center;
-    align-items: flex-start;
+    flex-direction: column;
     gap: 2rem;
     min-height: 100vh;
     padding: 2rem;
+    align-items: center;
   }
 
-  /* Left Info Box */
+  /* Accordion Info Banner */
   .info-box {
     background: #2a2a2a;
     border-radius: 1rem;
-    padding: 2rem;
-    width: 250px;
+    padding: 1.5rem 2rem;
+    width: 100%;
+    max-width: 1000px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   }
 
   .info-box h2 {
     margin-top: 0;
     margin-bottom: 1rem;
-    font-size: 1.5rem;
+    font-size: 1.8rem;
   }
 
-  .info-box p {
-    margin-bottom: 1rem;
-    line-height: 1.5;
+  .accordion-trigger {
+    cursor: pointer;
+    font-weight: bold;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #444;
+  }
+
+  .accordion-content {
+    padding: 0.5rem 0 1rem 0;
     color: #ccc;
   }
 
-  /* Center Video Carousel */
+  /* Video carousel */
   .center-panel {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 1.5rem;
+    width: 100%;
   }
 
   .camera-card {
-    background: #222; /* slightly lighter dark */
+    background: #222;
     border-radius: 1rem;
     padding: 1rem;
     display: flex;
@@ -87,14 +94,14 @@
   }
 
   .video-container {
-    width: 360px;
+    width: 640px;
     aspect-ratio: 16/9;
     overflow: hidden;
     border-radius: 1rem;
     cursor: pointer;
   }
 
-  img {
+  .video-container img {
     width: 100%;
     height: 100%;
     object-fit: cover;
@@ -105,6 +112,11 @@
     display: flex;
     align-items: center;
     gap: 1rem;
+  }
+
+  .slide-number {
+    font-weight: bold;
+    color: #ddd;
   }
 
   button {
@@ -122,21 +134,18 @@
     background: #555;
   }
 
-  .slide-number {
-    font-weight: bold;
-    color: #ddd;
-  }
-
-  /* Right Control Panel */
+  /* Settings panel */
   .control-panel {
     background: #2a2a2a;
     border-radius: 1rem;
-    padding: 2rem;
-    width: 250px;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    padding: 1.5rem 2rem;
+    width: 100%;
+    max-width: 1000px;
     display: flex;
-    flex-direction: column;
-    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 2rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
   }
 
   .control-panel label {
@@ -156,35 +165,47 @@
   }
 
   .control-panel button {
-    margin-top: 0.5rem;
+    margin-top: 1rem;
   }
 
-  /* Responsive */
-  @media (max-width: 1000px) {
-    .page-container {
-      flex-direction: column;
-      align-items: center;
-    }
-
-    .info-box, .control-panel {
-      width: 100%;
-    }
-
+  @media (max-width: 700px) {
     .video-container {
       width: 90%;
+    }
+
+    .control-panel {
+      flex-direction: column;
+      align-items: center;
     }
   }
 </style>
 
 <div class="page-container">
-  <!-- Left Info Box -->
+  <!-- Top row: Accordion Info -->
   <div class="info-box">
     <h2>Smart Extruder</h2>
-    <p>This tool uses a <strong>YOLO model</strong> to detect printer failures in real-time.</p>
-    <p>It helps prevent filament loss and ensures prints stay on track.</p>
+
+    <Accordion.Root type="single" class="w-full sm:max-w-[70%]" value="item-1">
+  <Accordion.Item value="item-1">
+    <Accordion.Trigger class="accordion-trigger">
+      <div style="text-align: center; width: 100%;">
+        How It Works
+      </div>
+    </Accordion.Trigger>
+    <Accordion.Content class="accordion-content">
+      <p>
+        Our Smart Extruder uses a YOLO model to detect printer failures in real-time.
+        It prevents filament loss and keeps prints on track.
+      </p>
+      <p>
+        Key features: advanced detection, intuitive interface, and automated alerts.
+      </p>
+    </Accordion.Content>
+  </Accordion.Item>
+</Accordion.Root>
   </div>
 
-  <!-- Center Video Carousel with Fade Transition -->
+  <!-- Middle row: Video carousel -->
   <div class="center-panel">
     <div class="camera-card">
       <div class="video-container" on:click={() => goToCam(currentIndex)}>
@@ -205,7 +226,7 @@
     </div>
   </div>
 
-  <!-- Right Control Panel -->
+  <!-- Bottom row: Settings panel -->
   <div class="control-panel">
     <label>
       Detection Threshold
