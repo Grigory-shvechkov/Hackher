@@ -14,7 +14,7 @@
   let currentIndex = 0;
 
   // Control panel state
-  let threshold = 0.5;
+  let threshold: number[] = [0.5];
   let autoTerminate = false;
 
   // Fetch the camera list from backend
@@ -49,12 +49,12 @@
   }
 
   function goToCam(camId: number) {
-    // Pass threshold as a query parameter
-    goto(`/camera/${camId}?threshold=${threshold}`);
+    // Pass threshold and autoTerminate as query parameters
+    goto(`/camera/${camId}?threshold=${threshold[0]}&autoTerminate=${autoTerminate}`);
   }
 
   function applySettings() {
-    alert(`Settings applied:\nThreshold: ${threshold}\nAuto Terminate: ${autoTerminate}`);
+    alert(`Settings applied:\nThreshold: ${threshold[0]}\nAuto Terminate: ${autoTerminate}`);
   }
 </script>
 
@@ -95,16 +95,15 @@
     font-size: 1.8rem;
   }
 
-  .accordion-trigger {
+  .video-button {
+    background: none;
+    border: none;
+    padding: 0;
     cursor: pointer;
-    font-weight: bold;
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #444;
   }
 
-  .accordion-content {
-    padding: 0.5rem 0 1rem 0;
-    color: #ccc;
+  .video-button:hover {
+    opacity: 0.8;
   }
 
   .center-panel {
@@ -220,15 +219,17 @@
   {#if cameras.length > 0}
     <div class="center-panel">
       <div class="camera-card">
-        <div class="video-container" on:click={() => goToCam(cameras[currentIndex].index)}>
-          {#key currentIndex}
-            <img
-              src={`${serverBase}/video/${cameras[currentIndex].index}`}
-              alt={`Camera ${cameras[currentIndex].index}`}
-              transition:fade={{ duration: 400 }}
-            />
-          {/key}
-        </div>
+        <button class="video-button" on:click={() => goToCam(cameras[currentIndex].index)}>
+          <div class="video-container">
+            {#key currentIndex}
+              <img
+                src={`${serverBase}/video/${cameras[currentIndex].index}`}
+                alt={`Camera ${cameras[currentIndex].index}`}
+                transition:fade={{ duration: 400 }}
+              />
+            {/key}
+          </div>
+        </button>
         <div class="controls">
           <button on:click={prev}>⏮ Previous</button>
           <span class="slide-number">{currentIndex + 1} / {cameras.length}</span>
@@ -243,8 +244,8 @@
   <!-- Settings -->
   <div class="control-panel">
     <div style="flex:1; min-width:200px;">
-      <label>Detection Threshold: {threshold.toFixed(2)}</label>
-      <Slider type="single" min={0} max={1} step={0.01} bind:value={threshold} />
+      <label for="threshold-slider">Detection Threshold: {threshold[0]?.toFixed(2) ?? '0.50'}</label>
+      <Slider type="single" id="threshold-slider" min={0} max={1} step={0.01} bind:value={threshold[0]} />
     </div>
 
     <div class="flex items-center space-x-2">

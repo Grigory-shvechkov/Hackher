@@ -7,6 +7,8 @@ import threading
 import time
 import glob
 import sys
+from queue import Queue
+from collections import deque
 
 # ------------------------
 # Config
@@ -14,15 +16,15 @@ import sys
 DEBUG = len(sys.argv) > 1 and sys.argv[1].lower() == "debug"
 
 # Capture settings
-CAP_WIDTH = 640
-CAP_HEIGHT = 480
+CAP_WIDTH = 1280
+CAP_HEIGHT = 720
 
 # Streaming settings
 STREAM_WIDTH = 320
 STREAM_HEIGHT = 240
-STREAM_FPS = 8
+STREAM_FPS = 10
 JPEG_QUALITY = 45
-YOLO_SKIP = 12  # Run YOLO every N frames
+YOLO_SKIP = 12
 
 # ------------------------
 # Flask setup
@@ -49,7 +51,6 @@ def detect_usb_cameras(max_test=5):
     for dev in glob.glob("/dev/video*"):
         try:
             idx = int(dev.replace("/dev/video", ""))
-            # Quick test to see if this device can open
             cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
@@ -78,6 +79,7 @@ def init_cams(indices):
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
+        cap.set(cv2.CAP_PROP_FPS, 30)
 
         ret, _ = cap.read()
         if not ret:
@@ -97,7 +99,7 @@ def init_cams(indices):
         })
 
         if DEBUG:
-            print(f"[DEBUG] Initialized camera {i} ({caps[-1]['dev']})")
+            print(f"[DEBUG] Initialized camera {i} ({cams[-1]['dev']})")
 
     return cams
 
@@ -125,25 +127,27 @@ def run_yolo(cam, frame):
 # Capture thread
 # ------------------------
 def capture_thread(cam):
-    interval = 1.0 / STREAM_FPS
+    frame_time = 1.0 / STREAM_FPS
+    yolo_thread = None
+    
     while True:
-        start = time.time()
         ret, frame = cam["cap"].read()
         if not ret:
-            time.sleep(0.01)
+            time.sleep(0.001)
             continue
 
         cam["frame_count"] += 1
 
-        # Run YOLO every YOLO_SKIP frames
+        # Run YOLO every YOLO_SKIP frames (only if not already running)
         if cam["frame_count"] % YOLO_SKIP == 0:
-            threading.Thread(target=run_yolo, args=(cam, frame.copy()), daemon=True).start()
+            if yolo_thread is None or not yolo_thread.is_alive():
+                yolo_thread = threading.Thread(target=run_yolo, args=(cam, frame.copy()), daemon=True)
+                yolo_thread.start()
 
         with cam["lock"]:
             cam["frame"] = frame
 
-        elapsed = time.time() - start
-        time.sleep(max(0, interval - elapsed))
+        time.sleep(0.001)
 
 # ------------------------
 # MJPEG streaming
@@ -157,7 +161,7 @@ def gen_frames(cam):
             time.sleep(0.01)
             continue
 
-        stream_frame = cv2.resize(frame, (STREAM_WIDTH, STREAM_HEIGHT), interpolation=cv2.INTER_NEAREST)
+        stream_frame = cv2.resize(frame, (STREAM_WIDTH, STREAM_HEIGHT), interpolation=cv2.INTER_LINEAR)
         ret, buffer = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
         if not ret:
             continue
@@ -170,11 +174,23 @@ def gen_frames(cam):
         )
 
 # ------------------------
+# Global camera storage
+# ------------------------
+cams = []
+cam_map = {}
+
+# ------------------------
 # Flask routes
 # ------------------------
+
+@app.route("/cameras")
+def cameras_list():
+    """Return the list of cameras with their index and device path."""
+    return jsonify([{"index": cam["index"], "device": cam["dev"]} for cam in cams])
+
 @app.route("/camera_count")
 def camera_count():
-    return jsonify(len(cams))
+    return jsonify({"count": len(cams)})
 
 @app.route("/video/<int:cam_idx>")
 def video(cam_idx):
@@ -190,12 +206,6 @@ def get_detections(cam_idx):
         abort(404)
     with cam["lock"]:
         return jsonify(cam["detections"])
-    
-@app.route("/cameras")
-def cameras_info():
-    """Return detailed info about all initialized cameras."""
-    cam_list = [{"index": cam["index"], "device": cam["dev"]} for cam in cams]
-    return jsonify(cam_list)
 
 # ------------------------
 # Main
@@ -217,4 +227,4 @@ if __name__ == "__main__":
     for cam in cams:
         threading.Thread(target=capture_thread, args=(cam,), daemon=True).start()
 
-    app.run(host="0.0.0.0", port=5000, threaded=True)
+    app.run(host="0.0.0.0", port=5000, threaded=True, debug=False)
