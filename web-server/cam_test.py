@@ -14,8 +14,8 @@ import sys
 DEBUG = len(sys.argv) > 1 and sys.argv[1].lower() == "debug"
 
 # Capture settings
-CAP_WIDTH = 640
-CAP_HEIGHT = 480
+CAP_WIDTH = 1280
+CAP_HEIGHT = 720
 
 # Streaming settings
 STREAM_WIDTH = 320

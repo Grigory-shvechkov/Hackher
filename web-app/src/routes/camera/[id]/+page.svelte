@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, afterUpdate } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
@@ -10,8 +10,8 @@
 
   let camId: number;
   let threshold = 0.5; // default threshold
-  let recentAlertPhoto: string | null = null;
-  let overlayInterval: ReturnType<typeof setInterval>;
+  let recentAlertPhoto: { src: string; detections: any[] } | null = null;
+  let alertTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Reactive statement to read URL params
   $: camId = Number($page.params.id);
@@ -31,13 +31,17 @@
     goto("/");
   }
 
+  let alertCanvas: HTMLCanvasElement | null = null;
+
   onMount(() => {
     const canvas = document.getElementById("overlay") as HTMLCanvasElement;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const drawDetections = async () => {
+    const video = document.querySelector(`.video-container img`) as HTMLImageElement;
+
+    const drawLoop = async () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       try {
@@ -51,13 +55,20 @@
         // Filter detections by threshold
         const alertDetections = detections.filter((det: any) => det.confidence >= threshold);
 
-        // Save most recent photo if any detection exceeds threshold
-        if (alertDetections.length > 0) {
-          recentAlertPhoto = `${serverBase}/video/${camId}?t=${Date.now()}`;
+        // If any detection passes threshold, snapshot it for 5s
+        if (alertDetections.length > 0 && !recentAlertPhoto) {
+          const img = new Image();
+          img.src = `${serverBase}/video/${camId}?t=${Date.now()}`;
+          recentAlertPhoto = { src: img.src, detections: alertDetections };
+
+          // Clear snapshot after 5 seconds
+          alertTimeout = setTimeout(() => {
+            recentAlertPhoto = null;
+          }, 5000);
         }
 
-        // Draw bounding boxes
-        alertDetections.forEach((det: any) => {
+        // Draw live video bounding boxes
+        detections.forEach((det: any) => {
           if (!det.bbox || det.bbox.length !== 4) return;
           const [x1, y1, x2, y2] = det.bbox.map(Number);
 
@@ -72,24 +83,63 @@
           );
 
           ctx.fillStyle = "lime";
-          ctx.font = "12px sans-serif";
+          ctx.font = "14px sans-serif";
           ctx.fillText(
             `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
             x1 * scaleX,
-            Math.max(0, y1 * scaleY - 2)
+            Math.max(12, y1 * scaleY - 2)
           );
           ctx.restore();
         });
+
       } catch (err) {
         console.error("Error fetching detections:", err);
       }
     };
 
-    // Start overlay drawing loop
-    drawDetections();
-    overlayInterval = setInterval(drawDetections, 200);
+    drawLoop();
+    const overlayInterval = setInterval(drawLoop, 200);
 
-    return () => clearInterval(overlayInterval);
+    return () => {
+      clearInterval(overlayInterval);
+      if (alertTimeout) clearTimeout(alertTimeout);
+    };
+  });
+
+  // Draw bounding boxes on alert snapshot after it updates
+  afterUpdate(() => {
+    if (recentAlertPhoto && alertCanvas) {
+      const ctx = alertCanvas.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, alertCanvas.width, alertCanvas.height);
+
+      const scaleX = alertCanvas.width / FRAME_WIDTH;
+      const scaleY = alertCanvas.height / FRAME_HEIGHT;
+
+      recentAlertPhoto.detections.forEach((det: any) => {
+        if (!det.bbox || det.bbox.length !== 4) return;
+        const [x1, y1, x2, y2] = det.bbox.map(Number);
+
+        ctx.save();
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(
+          x1 * scaleX,
+          y1 * scaleY,
+          (x2 - x1) * scaleX,
+          (y2 - y1) * scaleY
+        );
+
+        ctx.fillStyle = "red";
+        ctx.font = "14px sans-serif";
+        ctx.fillText(
+          `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
+          x1 * scaleX,
+          Math.max(12, y1 * scaleY - 2)
+        );
+        ctx.restore();
+      });
+    }
   });
 </script>
 
@@ -206,9 +256,18 @@
           <p>Printer temperature: 210°C</p>
           <p>Filament remaining: 120g</p>
           <p>Threshold set: {threshold.toFixed(2)}</p>
+
           {#if recentAlertPhoto}
-            <p>Most recent photo over threshold:</p>
-            <img src={recentAlertPhoto} alt="Recent Alert" style="width:100%; border-radius:0.5rem; margin-top:0.5rem;" />
+            <p>Most recent frame over threshold (5s snapshot):</p>
+            <div style="position:relative; width:100%; border-radius:0.5rem; margin-top:0.5rem;">
+              <img src={recentAlertPhoto.src} alt="Alert Snapshot" style="width:100%; border-radius:0.5rem;" />
+              <canvas
+                width={FRAME_WIDTH}
+                height={FRAME_HEIGHT}
+                style="position:absolute; top:0; left:0; width:100%; height:100%; border-radius:0.5rem;"
+                bind:this={alertCanvas}
+              />
+            </div>
           {/if}
         </Accordion.Content>
       </Accordion.Item>
