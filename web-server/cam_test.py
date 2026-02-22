@@ -6,13 +6,23 @@ from ultralytics import YOLO
 import threading
 import time
 import glob
-import os
 import sys
 
 # ------------------------
-# Debug flag
+# Config
 # ------------------------
 DEBUG = len(sys.argv) > 1 and sys.argv[1].lower() == "debug"
+
+# Capture settings
+CAP_WIDTH = 640
+CAP_HEIGHT = 480
+
+# Streaming settings
+STREAM_WIDTH = 320
+STREAM_HEIGHT = 240
+STREAM_FPS = 8
+JPEG_QUALITY = 45
+YOLO_SKIP = 12  # Run YOLO every N frames
 
 # ------------------------
 # Flask setup
@@ -21,18 +31,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ------------------------
-# Configuration
-# ------------------------
-CAP_WIDTH = 640
-CAP_HEIGHT = 480
-STREAM_WIDTH = 320
-STREAM_HEIGHT = 240
-STREAM_FPS = 8
-JPEG_QUALITY = 45
-YOLO_SKIP = 12
-
-# ------------------------
-# Load YOLO model
+# Load YOLO
 # ------------------------
 model = YOLO("./best.pt")
 try:
@@ -41,20 +40,27 @@ except AttributeError:
     pass
 
 # ------------------------
-# Detect USB cameras dynamically
+# Detect USB cameras safely
 # ------------------------
 def detect_usb_cameras(max_test=10):
+    """Return list of /dev/video indices that can actually be opened."""
     usb_indices = []
 
     for dev in glob.glob("/dev/video*"):
         try:
             idx = int(dev.replace("/dev/video", ""))
-            name_file = f"/sys/class/video4linux/{os.path.basename(dev)}/name"
-            if os.path.exists(name_file):
-                with open(name_file, "r") as f:
-                    name = f.read().strip().lower()
-                    if "usb" in name or "logitech" in name:
-                        usb_indices.append(idx)
+            # Quick test to see if this device can open
+            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+            ret, _ = cap.read()
+            cap.release()
+
+            if ret:
+                usb_indices.append(idx)
+                if DEBUG:
+                    print(f"[INFO] Camera /dev/video{idx} detected.")
             if len(usb_indices) >= max_test:
                 break
         except Exception:
@@ -63,23 +69,21 @@ def detect_usb_cameras(max_test=10):
     return usb_indices
 
 # ------------------------
-# Initialize cameras safely
+# Initialize cameras
 # ------------------------
 def init_cams(indices):
     cams = []
-
     for i, idx in enumerate(indices):
         cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
 
-        # Quick test read
         ret, _ = cap.read()
         if not ret:
+            cap.release()
             if DEBUG:
                 print(f"[DEBUG] Camera /dev/video{idx} failed initial read.")
-            cap.release()
             continue
 
         cams.append({
@@ -98,7 +102,7 @@ def init_cams(indices):
     return cams
 
 # ------------------------
-# YOLO async detection
+# YOLO detection (async)
 # ------------------------
 def run_yolo(cam, frame):
     try:
@@ -118,11 +122,10 @@ def run_yolo(cam, frame):
         print(f"[YOLO] Error on cam {cam['index']}: {e}")
 
 # ------------------------
-# Capture thread per camera
+# Capture thread
 # ------------------------
 def capture_thread(cam):
     interval = 1.0 / STREAM_FPS
-
     while True:
         start = time.time()
         ret, frame = cam["cap"].read()
@@ -132,7 +135,7 @@ def capture_thread(cam):
 
         cam["frame_count"] += 1
 
-        # Run YOLO async every YOLO_SKIP frames
+        # Run YOLO every YOLO_SKIP frames
         if cam["frame_count"] % YOLO_SKIP == 0:
             threading.Thread(target=run_yolo, args=(cam, frame.copy()), daemon=True).start()
 
@@ -143,7 +146,7 @@ def capture_thread(cam):
         time.sleep(max(0, interval - elapsed))
 
 # ------------------------
-# MJPEG streaming generator
+# MJPEG streaming
 # ------------------------
 def gen_frames(cam):
     while True:
@@ -154,7 +157,6 @@ def gen_frames(cam):
             time.sleep(0.01)
             continue
 
-        # Downscale for streaming
         stream_frame = cv2.resize(frame, (STREAM_WIDTH, STREAM_HEIGHT), interpolation=cv2.INTER_NEAREST)
         ret, buffer = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
         if not ret:
@@ -190,7 +192,7 @@ def get_detections(cam_idx):
         return jsonify(cam["detections"])
 
 # ------------------------
-# Main entry
+# Main
 # ------------------------
 if __name__ == "__main__":
     usb_indices = detect_usb_cameras()
@@ -205,7 +207,7 @@ if __name__ == "__main__":
 
     cam_map = {cam["index"]: cam for cam in cams}
 
-    print(f"Starting Flask server with {len(cams)} cameras...")
+    print(f"Starting Flask server with {len(cams)} camera(s)...")
     for cam in cams:
         threading.Thread(target=capture_thread, args=(cam,), daemon=True).start()
 
