@@ -19,13 +19,13 @@ app = Flask(__name__)
 CORS(app)
 
 # ------------------------
-# Configuration
+# Configuration (LOW LATENCY)
 # ------------------------
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-JPEG_QUALITY = 75
-STREAM_FPS = 30
-YOLO_SKIP = 5
+FRAME_WIDTH = 320
+FRAME_HEIGHT = 240
+STREAM_FPS = 8
+JPEG_QUALITY = 45
+YOLO_SKIP = 12
 
 # ------------------------
 # Load YOLO
@@ -37,21 +37,29 @@ except AttributeError:
     pass
 
 # ------------------------
-# Auto-detect working USB cameras
+# Detect cameras (Pi-safe)
 # ------------------------
 def detect_cameras(max_test=10):
     devices = glob.glob("/dev/video*")
     working = []
 
     for dev in devices:
-        cap = cv2.VideoCapture(dev)
-        if cap.isOpened():
+        try:
+            idx = int(dev.replace("/dev/video", ""))
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                continue
+
             ret, _ = cap.read()
             if ret:
-                working.append(dev)
+                working.append(idx)
                 if DEBUG:
-                    print(f"[DEBUG] Camera detected: {dev}")
+                    print(f"[DEBUG] Camera detected: /dev/video{idx}")
+
             cap.release()
+        except Exception:
+            pass
+
     return working[:max_test]
 
 CAM_DEVICES = detect_cameras()
@@ -62,51 +70,69 @@ if not CAM_DEVICES:
 # ------------------------
 # Initialize cameras
 # ------------------------
-def init_cams(devices):
+def init_cams(indices):
     cams = []
-    for i, dev in enumerate(devices):
-        cap = cv2.VideoCapture(dev)
+
+    for i, idx in enumerate(indices):
+        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+        dev_name = f"/dev/video{idx}"
+
+        if not cap.isOpened():
+            if DEBUG:
+                print(f"[DEBUG] Failed to open {dev_name}")
+            cap.release()
+            continue
+
+        # 🔥 Kill OpenCV buffering (CRITICAL)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # Set resolution
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-        if cap.isOpened():
-            cams.append({
-                "index": i,
-                "dev": dev,
-                "cap": cap,
-                "frame": None,
-                "detections": [],
-                "frame_count": 0,
-                "lock": threading.Lock()
-            })
-        else:
-            cap.release()
-            if DEBUG:
-                print(f"[DEBUG] Failed to open {dev}")
+
+        # Warm-up reads
+        for _ in range(3):
+            cap.read()
+
+        cams.append({
+            "index": i,
+            "dev": dev_name,
+            "cap": cap,
+            "frame": None,
+            "detections": [],
+            "frame_count": 0,
+            "lock": threading.Lock()
+        })
+
+        if DEBUG:
+            print(f"[DEBUG] Initialized camera {i} ({dev_name})")
+
     return cams
 
 cams = init_cams(CAM_DEVICES)
-cam_map = {cam['index']: cam for cam in cams}
-
-if DEBUG:
-    print(f"[DEBUG] Cameras initialized: {[cam['dev'] for cam in cams]}")
+cam_map = {cam["index"]: cam for cam in cams}
 
 # ------------------------
 # Capture & YOLO thread
 # ------------------------
 def capture_thread(cam):
     interval = 1.0 / STREAM_FPS
+
     while True:
-        ret, frame = cam['cap'].read()
+        ret, frame = cam["cap"].read()
         if not ret:
             time.sleep(0.05)
             continue
 
-        cam['frame_count'] += 1
+        cam["frame_count"] += 1
 
-        # YOLO detection every YOLO_SKIP frames
-        if cam['frame_count'] % YOLO_SKIP == 0:
+        # YOLO every N frames
+        if cam["frame_count"] % YOLO_SKIP == 0:
             try:
-                results = model.predict(frame, verbose=False)
+                # Optional resize for YOLO speed
+                small = cv2.resize(frame, (320, 240))
+                results = model.predict(small, verbose=False)
+
                 detections = []
                 for box in results[0].boxes:
                     detections.append({
@@ -114,43 +140,57 @@ def capture_thread(cam):
                         "confidence": float(box.conf[0]),
                         "bbox": box.xyxy[0].tolist()
                     })
-                with cam['lock']:
-                    cam['detections'] = detections
+
+                with cam["lock"]:
+                    cam["detections"] = detections
 
                 if DEBUG:
-                    print(f"[YOLO] Cam {cam['index']} Frame {cam['frame_count']}: {len(detections)} detections")
+                    print(f"[YOLO] Cam {cam['index']} detections: {len(detections)}")
+
             except Exception as e:
                 print(f"YOLO error on cam {cam['index']}: {e}")
 
-        with cam['lock']:
-            cam['frame'] = frame
+        # 🔥 Always overwrite frame (never queue)
+        with cam["lock"]:
+            cam["frame"] = frame
 
         time.sleep(interval)
 
 # Start capture threads
 for cam in cams:
-    t = threading.Thread(target=capture_thread, args=(cam,), daemon=True)
-    t.start()
-    if DEBUG:
-        print(f"[DEBUG] Started capture thread for camera {cam['index']} ({cam['dev']})")
+    threading.Thread(
+        target=capture_thread,
+        args=(cam,),
+        daemon=True
+    ).start()
 
 # ------------------------
 # MJPEG streaming generator
 # ------------------------
 def gen_frames(cam):
     while True:
-        with cam['lock']:
-            frame = cam['frame']
+        with cam["lock"]:
+            frame = cam["frame"]
+
         if frame is None:
             time.sleep(0.05)
             continue
 
-        ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        ret, buffer = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+        )
+
         if not ret:
             continue
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + buffer.tobytes()
+            + b"\r\n"
+        )
 
 # ------------------------
 # Flask routes
@@ -164,16 +204,20 @@ def video(cam_idx):
     cam = cam_map.get(cam_idx)
     if not cam:
         abort(404)
-    return Response(gen_frames(cam),
-                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    return Response(
+        gen_frames(cam),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
 
 @app.route("/detections/<int:cam_idx>")
 def get_detections(cam_idx):
     cam = cam_map.get(cam_idx)
     if not cam:
         abort(404)
-    with cam['lock']:
-        return jsonify(cam['detections'])
+
+    with cam["lock"]:
+        return jsonify(cam["detections"])
 
 # ------------------------
 # Main
