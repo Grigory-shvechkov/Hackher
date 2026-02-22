@@ -1,2 +1,3 @@
 pip insatll flask
 pip install flask-cors
+pip install opencv-python
