@@ -6,6 +6,7 @@ import time
 from ultralytics import YOLO
 import sys
 import glob
+import os
 
 # ------------------------
 # Debug flag
@@ -21,15 +22,10 @@ CORS(app)
 # ------------------------
 # Configuration
 # ------------------------
-
-# Camera capture resolution (HIGH for YOLO)
 CAP_WIDTH = 640
 CAP_HEIGHT = 480
-
-# Stream resolution (LOW for MJPEG)
 STREAM_WIDTH = 320
 STREAM_HEIGHT = 240
-
 STREAM_FPS = 8
 JPEG_QUALITY = 45
 YOLO_SKIP = 12
@@ -44,7 +40,7 @@ except AttributeError:
     pass
 
 # ------------------------
-# Detect cameras (Pi-safe)
+# Detect cameras fast (Pi-safe)
 # ------------------------
 def detect_cameras(max_test=10):
     devices = glob.glob("/dev/video*")
@@ -53,17 +49,33 @@ def detect_cameras(max_test=10):
     for dev in devices:
         try:
             idx = int(dev.replace("/dev/video", ""))
-            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                continue
 
-            ret, _ = cap.read()
+            # Quick check using V4L2 info (avoids warnings)
+            dev_name_path = f"/sys/class/video4linux/{os.path.basename(dev)}/name"
+            if os.path.exists(dev_name_path):
+                with open(dev_name_path, "r") as f:
+                    name = f.read().strip().lower()
+                    if not any(k in name for k in ("usb", "camera")):
+                        continue
+
+            # Optional: fast VideoCapture check (0.1s timeout)
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            start = time.time()
+            ret = False
+            while time.time() - start < 0.1:
+                ret, _ = cap.read()
+                if ret:
+                    break
+            cap.release()
             if ret:
                 working.append(idx)
                 if DEBUG:
                     print(f"[DEBUG] Camera detected: /dev/video{idx}")
 
-            cap.release()
+            if len(working) >= max_test:
+                break
+
         except Exception:
             pass
 
@@ -90,10 +102,7 @@ def init_cams(indices):
             cap.release()
             continue
 
-        # 🔥 Kill buffering (CRITICAL)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        # High-res capture for YOLO
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
 
@@ -105,7 +114,7 @@ def init_cams(indices):
             "index": i,
             "dev": dev_name,
             "cap": cap,
-            "frame": None,          # full-res frame
+            "frame": None,
             "detections": [],
             "frame_count": 0,
             "lock": threading.Lock()
@@ -120,62 +129,57 @@ cams = init_cams(CAM_DEVICES)
 cam_map = {cam["index"]: cam for cam in cams}
 
 # ------------------------
+# Asynchronous YOLO function
+# ------------------------
+def run_yolo(cam, frame):
+    try:
+        results = model.predict(frame, imgsz=320, conf=0.25, verbose=False)
+        detections = [{
+            "class": int(box.cls[0]),
+            "confidence": float(box.conf[0]),
+            "bbox": box.xyxy[0].tolist()
+        } for box in results[0].boxes]
+
+        with cam["lock"]:
+            cam["detections"] = detections
+
+        if DEBUG:
+            print(f"[YOLO] Cam {cam['index']} detections: {len(detections)}")
+
+    except Exception as e:
+        print(f"YOLO error on cam {cam['index']}: {e}")
+
+# ------------------------
 # Capture & YOLO thread
 # ------------------------
 def capture_thread(cam):
     interval = 1.0 / STREAM_FPS
 
     while True:
+        start = time.time()
         ret, frame = cam["cap"].read()
         if not ret:
-            time.sleep(0.05)
+            time.sleep(0.01)
             continue
 
         cam["frame_count"] += 1
 
-        # Run YOLO on HIGH-res frames only
+        # Async YOLO on every YOLO_SKIP frame
         if cam["frame_count"] % YOLO_SKIP == 0:
-            try:
-                results = model.predict(
-                    frame,
-                    imgsz=640,
-                    conf=0.25,
-                    verbose=False
-                )
+            threading.Thread(target=run_yolo, args=(cam, frame.copy()), daemon=True).start()
 
-                detections = []
-                for box in results[0].boxes:
-                    detections.append({
-                        "class": int(box.cls[0]),
-                        "confidence": float(box.conf[0]),
-                        "bbox": box.xyxy[0].tolist()
-                    })
-
-                with cam["lock"]:
-                    cam["detections"] = detections
-
-                if DEBUG:
-                    print(f"[YOLO] Cam {cam['index']} detections: {len(detections)}")
-
-            except Exception as e:
-                print(f"YOLO error on cam {cam['index']}: {e}")
-
-        # 🔥 Always overwrite frame (no queue)
         with cam["lock"]:
             cam["frame"] = frame
 
-        time.sleep(interval)
+        elapsed = time.time() - start
+        time.sleep(max(0, interval - elapsed))
 
 # Start threads
 for cam in cams:
-    threading.Thread(
-        target=capture_thread,
-        args=(cam,),
-        daemon=True
-    ).start()
+    threading.Thread(target=capture_thread, args=(cam,), daemon=True).start()
 
 # ------------------------
-# MJPEG streaming (LOW RES ONLY)
+# MJPEG streaming
 # ------------------------
 def gen_frames(cam):
     while True:
@@ -183,22 +187,11 @@ def gen_frames(cam):
             frame = cam["frame"]
 
         if frame is None:
-            time.sleep(0.05)
+            time.sleep(0.01)
             continue
 
-        # 🔽 Downscale ONLY for streaming
-        stream_frame = cv2.resize(
-            frame,
-            (STREAM_WIDTH, STREAM_HEIGHT),
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        ret, buffer = cv2.imencode(
-            ".jpg",
-            stream_frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-        )
-
+        stream_frame = cv2.resize(frame, (STREAM_WIDTH, STREAM_HEIGHT), interpolation=cv2.INTER_NEAREST)
+        ret, buffer = cv2.imencode(".jpg", stream_frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
         if not ret:
             continue
 
@@ -221,18 +214,13 @@ def video(cam_idx):
     cam = cam_map.get(cam_idx)
     if not cam:
         abort(404)
-
-    return Response(
-        gen_frames(cam),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
+    return Response(gen_frames(cam), mimetype="multipart/x-mixed-replace; boundary=frame")
 
 @app.route("/detections/<int:cam_idx>")
 def get_detections(cam_idx):
     cam = cam_map.get(cam_idx)
     if not cam:
         abort(404)
-
     with cam["lock"]:
         return jsonify(cam["detections"])
 
