@@ -1,100 +1,222 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
+  import { fade } from "svelte/transition";
 
   const serverBase = "http://172.31.88.33:5000";
+  const CAM_COUNT = 3;
+  let currentIndex = 0;
 
-  // Frame dimensions from backend
-  const FRAME_WIDTH = 320;
-  const FRAME_HEIGHT = 240;
+  // Control panel state
+  let threshold = 0.5;
+  let autoTerminate = false;
 
-  let camIdx = 0; // choose which camera to show
-  let overlayInterval: ReturnType<typeof setInterval>;
+  function next() {
+    currentIndex = (currentIndex + 1) % CAM_COUNT;
+  }
 
-  onMount(() => {
-    const canvas = document.getElementById(`overlay`) as HTMLCanvasElement;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+  function prev() {
+    currentIndex = (currentIndex - 1 + CAM_COUNT) % CAM_COUNT;
+  }
 
-    const drawOverlay = async () => {
-      // clear previous drawings
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+  function goToCam(camId: number) {
+    goto(`/camera/${camId}`);
+  }
 
-    
-      try {
-        const res = await fetch(`${serverBase}/detections/${camIdx}`);
-        if (!res.ok) return;
-        const detections = await res.json();
-
-        const scaleX = canvas.width / FRAME_WIDTH;
-        const scaleY = canvas.height / FRAME_HEIGHT;
-
-        // draw YOLO boxes
-        detections.forEach((det: any) => {
-          if (!det.bbox || det.bbox.length !== 4) return;
-          const [x1, y1, x2, y2] = det.bbox.map(Number);
-
-          ctx.strokeStyle = "lime";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(
-            x1 * scaleX,
-            y1 * scaleY,
-            (x2 - x1) * scaleX,
-            (y2 - y1) * scaleY
-          );
-
-          ctx.fillStyle = "lime";
-          ctx.font = "12px sans-serif";
-          ctx.fillText(
-            `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
-            x1 * scaleX,
-            Math.max(0, y1 * scaleY - 2)
-          );
-        });
-      } catch (err) {
-        console.error("Error fetching detections:", err);
-      }
-    };
-
-    drawOverlay(); // draw immediately
-    overlayInterval = setInterval(drawOverlay, 200); // update every 200ms
-
-    return () => {
-      clearInterval(overlayInterval);
-    };
-  });
+  function applySettings() {
+    alert(`Settings applied:\nThreshold: ${threshold}\nAuto Terminate: ${autoTerminate}`);
+  }
 </script>
 
 <style>
+  /* Global body background */
+  :global(body) {
+    margin: 0;
+    font-family: 'Segoe UI', sans-serif;
+    background: #1a1a1a; /* dark grey */
+    color: #fff;
+  }
+
+  /* Page container */
+  .page-container {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 2rem;
+    min-height: 100vh;
+    padding: 2rem;
+  }
+
+  /* Left Info Box */
+  .info-box {
+    background: #2a2a2a;
+    border-radius: 1rem;
+    padding: 2rem;
+    width: 250px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+
+  .info-box h2 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+  }
+
+  .info-box p {
+    margin-bottom: 1rem;
+    line-height: 1.5;
+    color: #ccc;
+  }
+
+  /* Center Video Carousel */
+  .center-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .camera-card {
+    background: #222; /* slightly lighter dark */
+    border-radius: 1rem;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+
   .video-container {
-    position: relative;
-    width: 320px;
-    height: 240px;
-    background: black;
+    width: 360px;
+    aspect-ratio: 16/9;
+    overflow: hidden;
+    border-radius: 1rem;
+    cursor: pointer;
   }
-  canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 10;
-    pointer-events: none;
-    width: 100%;
-    height: 100%;
-  }
+
   img {
-    position: absolute;
-    top: 0;
-    left: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    z-index: 0;
+    border-radius: 1rem;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  button {
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    cursor: pointer;
+    background: #333;
+    color: #fff;
+    border: 1px solid #555;
+    border-radius: 0.5rem;
+    transition: background 0.2s ease;
+  }
+
+  button:hover {
+    background: #555;
+  }
+
+  .slide-number {
+    font-weight: bold;
+    color: #ddd;
+  }
+
+  /* Right Control Panel */
+  .control-panel {
+    background: #2a2a2a;
+    border-radius: 1rem;
+    padding: 2rem;
+    width: 250px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .control-panel label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.9rem;
+    color: #ccc;
+  }
+
+  input[type="number"], input[type="checkbox"] {
+    margin-top: 0.3rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.25rem;
+    border: none;
+    outline: none;
+    font-size: 0.9rem;
+  }
+
+  .control-panel button {
+    margin-top: 0.5rem;
+  }
+
+  /* Responsive */
+  @media (max-width: 1000px) {
+    .page-container {
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .info-box, .control-panel {
+      width: 100%;
+    }
+
+    .video-container {
+      width: 90%;
+    }
   }
 </style>
 
-<div class="flex items-center justify-center min-h-screen bg-gray-900">
-  <div class="video-container">
-    <img src={`${serverBase}/video/${camIdx}`} alt="Camera feed" />
-    <canvas id="overlay" width={FRAME_WIDTH} height={FRAME_HEIGHT}></canvas>
+<div class="page-container">
+  <!-- Left Info Box -->
+  <div class="info-box">
+    <h2>Smart Extruder</h2>
+    <p>This tool uses a <strong>YOLO model</strong> to detect printer failures in real-time.</p>
+    <p>It helps prevent filament loss and ensures prints stay on track.</p>
+  </div>
+
+  <!-- Center Video Carousel with Fade Transition -->
+  <div class="center-panel">
+    <div class="camera-card">
+      <div class="video-container" on:click={() => goToCam(currentIndex)}>
+        {#key currentIndex}
+          <img
+            src={`${serverBase}/video/${currentIndex}`}
+            alt={`Camera ${currentIndex}`}
+            transition:fade={{ duration: 400 }}
+          />
+        {/key}
+      </div>
+
+      <div class="controls">
+        <button on:click={prev}>⏮ Previous</button>
+        <span class="slide-number">{currentIndex + 1} / {CAM_COUNT}</span>
+        <button on:click={next}>Next ⏭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Control Panel -->
+  <div class="control-panel">
+    <label>
+      Detection Threshold
+      <input type="number" min="0" max="1" step="0.01" bind:value={threshold} />
+    </label>
+
+    <label>
+      <input type="checkbox" bind:checked={autoTerminate} />
+      Enable Auto Terminate
+    </label>
+
+    <button on:click={applySettings}>Apply Settings</button>
   </div>
 </div>
