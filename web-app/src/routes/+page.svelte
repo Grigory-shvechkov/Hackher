@@ -1,26 +1,56 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { fade } from "svelte/transition";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
+  import { Slider } from "$lib/components/ui/slider/index.js";
+  import { Switch } from "$lib/components/ui/switch/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
 
   const serverBase = "http://192.168.255.125:5000";
-  const CAM_COUNT = 3;
+
+  // Camera state
+  let cameras: { index: number; device: string }[] = [];
   let currentIndex = 0;
 
   // Control panel state
   let threshold = 0.5;
   let autoTerminate = false;
 
+  // Fetch the camera list from backend
+  async function fetchCameras() {
+    try {
+      const res = await fetch(`${serverBase}/cameras`);
+      if (!res.ok) throw new Error("Failed to fetch cameras");
+      cameras = await res.json();
+      // Reset index if cameras exist
+      if (cameras.length > 0) currentIndex = 0;
+    } catch (err) {
+      console.error("Failed to fetch cameras:", err);
+      cameras = [];
+    }
+  }
+
+  onMount(() => {
+    fetchCameras();
+    // Optional: refresh every 10 seconds
+    // const interval = setInterval(fetchCameras, 10000);
+    // return () => clearInterval(interval);
+  });
+
   function next() {
-    currentIndex = (currentIndex + 1) % CAM_COUNT;
+    if (cameras.length === 0) return;
+    currentIndex = (currentIndex + 1) % cameras.length;
   }
 
   function prev() {
-    currentIndex = (currentIndex - 1 + CAM_COUNT) % CAM_COUNT;
+    if (cameras.length === 0) return;
+    currentIndex = (currentIndex - 1 + cameras.length) % cameras.length;
   }
 
   function goToCam(camId: number) {
-    goto(`/camera/${camId}`);
+    // Pass threshold as a query parameter
+    goto(`/camera/${camId}?threshold=${threshold}`);
   }
 
   function applySettings() {
@@ -45,7 +75,6 @@
     align-items: center;
   }
 
-  /* Accordion Info Banner */
   .info-box {
     background: #2a2a2a;
     border-radius: 1rem;
@@ -53,6 +82,11 @@
     width: 100%;
     max-width: 1000px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
   }
 
   .info-box h2 {
@@ -73,7 +107,6 @@
     color: #ccc;
   }
 
-  /* Video carousel */
   .center-panel {
     display: flex;
     flex-direction: column;
@@ -134,7 +167,6 @@
     background: #555;
   }
 
-  /* Settings panel */
   .control-panel {
     background: #2a2a2a;
     border-radius: 1rem;
@@ -155,19 +187,6 @@
     color: #ccc;
   }
 
-  input[type="number"], input[type="checkbox"] {
-    margin-top: 0.3rem;
-    padding: 0.4rem 0.6rem;
-    border-radius: 0.25rem;
-    border: none;
-    outline: none;
-    font-size: 0.9rem;
-  }
-
-  .control-panel button {
-    margin-top: 1rem;
-  }
-
   @media (max-width: 700px) {
     .video-container {
       width: 90%;
@@ -181,62 +200,57 @@
 </style>
 
 <div class="page-container">
-  <!-- Top row: Accordion Info -->
+  <!-- Info -->
   <div class="info-box">
     <h2>Smart Extruder</h2>
-
     <Accordion.Root type="single" class="w-full sm:max-w-[70%]" value="item-1">
-  <Accordion.Item value="item-1">
-    <Accordion.Trigger class="accordion-trigger">
-      <div style="text-align: center; width: 100%;">
-        How It Works
-      </div>
-    </Accordion.Trigger>
-    <Accordion.Content class="accordion-content">
-      <p>
-        Our Smart Extruder uses a YOLO model to detect printer failures in real-time.
-        It prevents filament loss and keeps prints on track.
-      </p>
-      <p>
-        Key features: advanced detection, intuitive interface, and automated alerts.
-      </p>
-    </Accordion.Content>
-  </Accordion.Item>
-</Accordion.Root>
+      <Accordion.Item value="item-1">
+        <Accordion.Trigger class="accordion-trigger">
+          How It Works
+        </Accordion.Trigger>
+        <Accordion.Content class="accordion-content">
+          <p>Our Smart Extruder uses a YOLO model to detect printer failures in real-time.</p>
+          <p>Key features: advanced detection, intuitive interface, and automated alerts.</p>
+        </Accordion.Content>
+      </Accordion.Item>
+    </Accordion.Root>
   </div>
 
-  <!-- Middle row: Video carousel -->
-  <div class="center-panel">
-    <div class="camera-card">
-      <div class="video-container" on:click={() => goToCam(currentIndex)}>
-        {#key currentIndex}
-          <img
-            src={`${serverBase}/video/${currentIndex}`}
-            alt={`Camera ${currentIndex}`}
-            transition:fade={{ duration: 400 }}
-          />
-        {/key}
-      </div>
-
-      <div class="controls">
-        <button on:click={prev}>⏮ Previous</button>
-        <span class="slide-number">{currentIndex + 1} / {CAM_COUNT}</span>
-        <button on:click={next}>Next ⏭</button>
+  <!-- Video carousel -->
+  {#if cameras.length > 0}
+    <div class="center-panel">
+      <div class="camera-card">
+        <div class="video-container" on:click={() => goToCam(cameras[currentIndex].index)}>
+          {#key currentIndex}
+            <img
+              src={`${serverBase}/video/${cameras[currentIndex].index}`}
+              alt={`Camera ${cameras[currentIndex].index}`}
+              transition:fade={{ duration: 400 }}
+            />
+          {/key}
+        </div>
+        <div class="controls">
+          <button on:click={prev}>⏮ Previous</button>
+          <span class="slide-number">{currentIndex + 1} / {cameras.length}</span>
+          <button on:click={next}>Next ⏭</button>
+        </div>
       </div>
     </div>
-  </div>
+  {:else}
+    <p>Loading cameras...</p>
+  {/if}
 
-  <!-- Bottom row: Settings panel -->
+  <!-- Settings -->
   <div class="control-panel">
-    <label>
-      Detection Threshold
-      <input type="number" min="0" max="1" step="0.01" bind:value={threshold} />
-    </label>
+    <div style="flex:1; min-width:200px;">
+      <label>Detection Threshold: {threshold.toFixed(2)}</label>
+      <Slider type="single" min={0} max={1} step={0.01} bind:value={threshold} />
+    </div>
 
-    <label>
-      <input type="checkbox" bind:checked={autoTerminate} />
-      Enable Auto Terminate
-    </label>
+    <div class="flex items-center space-x-2">
+      <Switch bind:checked={autoTerminate} id="auto-terminate" />
+      <Label for="auto-terminate">Enable Auto Terminate</Label>
+    </div>
 
     <button on:click={applySettings}>Apply Settings</button>
   </div>

@@ -42,7 +42,7 @@ except AttributeError:
 # ------------------------
 # Detect USB cameras safely
 # ------------------------
-def detect_usb_cameras(max_test=10):
+def detect_usb_cameras(max_test=5):
     """Return list of /dev/video indices that can actually be opened."""
     usb_indices = []
 
@@ -172,6 +172,13 @@ def gen_frames(cam):
 # ------------------------
 # Flask routes
 # ------------------------
+
+
+@app.route("/cameras")
+def cameras_list():
+    """Return the list of cameras with their index and device path."""
+    return jsonify([{"index": cam["index"], "device": cam["dev"]} for cam in cams])
+
 @app.route("/camera_count")
 def camera_count():
     return jsonify(len(cams))

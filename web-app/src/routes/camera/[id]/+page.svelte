@@ -5,13 +5,22 @@
   import * as Accordion from "$lib/components/ui/accordion/index.js";
 
   const serverBase = "http://192.168.255.125:5000";
-  const FRAME_WIDTH = 640;  // fixed display width
-  const FRAME_HEIGHT = 480; // fixed display height
+  const FRAME_WIDTH = 640;
+  const FRAME_HEIGHT = 480;
 
   let camId: number;
+  let threshold = 0.5; // default threshold
+  let recentAlertPhoto: string | null = null;
   let overlayInterval: ReturnType<typeof setInterval>;
 
+  // Reactive statement to read URL params
   $: camId = Number($page.params.id);
+
+  // Optional: read threshold from query string
+  $: {
+    const t = Number($page.url.searchParams.get("threshold"));
+    if (!isNaN(t)) threshold = t;
+  }
 
   function terminatePrint() {
     alert(`Terminating print on camera ${camId}`);
@@ -19,7 +28,7 @@
   }
 
   function goHome() {
-    goto("/"); // replace with your carousel route
+    goto("/");
   }
 
   onMount(() => {
@@ -39,7 +48,16 @@
         const scaleX = canvas.width / FRAME_WIDTH;
         const scaleY = canvas.height / FRAME_HEIGHT;
 
-        detections.forEach((det: any) => {
+        // Filter detections by threshold
+        const alertDetections = detections.filter((det: any) => det.confidence >= threshold);
+
+        // Save most recent photo if any detection exceeds threshold
+        if (alertDetections.length > 0) {
+          recentAlertPhoto = `${serverBase}/video/${camId}?t=${Date.now()}`;
+        }
+
+        // Draw bounding boxes
+        alertDetections.forEach((det: any) => {
           if (!det.bbox || det.bbox.length !== 4) return;
           const [x1, y1, x2, y2] = det.bbox.map(Number);
 
@@ -67,6 +85,7 @@
       }
     };
 
+    // Start overlay drawing loop
     drawDetections();
     overlayInterval = setInterval(drawDetections, 200);
 
@@ -96,10 +115,13 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    align-items: center;
+    text-align: center;
   }
 
   .info-box h2 {
     margin: 0;
+    font-size: 1.8rem;
   }
 
   .info-box button {
@@ -117,8 +139,8 @@
   }
 
   .video-container {
-    width: 640px;   /* fixed width */
-    height: 480px;  /* fixed height */
+    width: 640px;
+    height: 480px;
     position: relative;
     background: black;
     border-radius: 1rem;
@@ -132,7 +154,7 @@
   .video-container canvas {
     width: 100%;
     height: 100%;
-    object-fit: cover; /* keeps aspect ratio, crops if needed */
+    object-fit: cover;
     display: block;
     border-radius: 1rem;
     position: absolute;
@@ -140,7 +162,6 @@
     left: 0;
   }
 
-  /* Accordion overrides */
   .accordion-trigger {
     cursor: pointer;
     background: #333;
@@ -155,9 +176,8 @@
     border-left: 2px solid #555;
   }
 
-  /* Home button at bottom */
   .home-button {
-    margin-top: auto; /* push to bottom */
+    margin-top: auto;
     padding: 0.5rem 1rem;
     font-size: 1rem;
     cursor: pointer;
@@ -185,14 +205,16 @@
           <p>Current print status: Active</p>
           <p>Printer temperature: 210°C</p>
           <p>Filament remaining: 120g</p>
+          <p>Threshold set: {threshold.toFixed(2)}</p>
+          {#if recentAlertPhoto}
+            <p>Most recent photo over threshold:</p>
+            <img src={recentAlertPhoto} alt="Recent Alert" style="width:100%; border-radius:0.5rem; margin-top:0.5rem;" />
+          {/if}
         </Accordion.Content>
       </Accordion.Item>
     </Accordion.Root>
 
-    <!-- Home button -->
-    <button class="home-button" on:click={goHome}>
-      Home / Back to Carousel
-    </button>
+    <button class="home-button" on:click={goHome}>Home / Back to Carousel</button>
   </div>
 
   <!-- Video Feed -->

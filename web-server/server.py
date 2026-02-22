@@ -1,34 +1,34 @@
+#!/usr/bin/env python3
 from flask import Flask, Response, abort, jsonify
-import cv2
 from flask_cors import CORS
+import cv2
+from ultralytics import YOLO
 import threading
 import time
-from ultralytics import YOLO
-import sys
 import glob
-import os
+import sys
 
 # ------------------------
-# Debug flag
+# Config
 # ------------------------
 DEBUG = len(sys.argv) > 1 and sys.argv[1].lower() == "debug"
+
+# Capture settings
+CAP_WIDTH = 640
+CAP_HEIGHT = 480
+
+# Streaming settings
+STREAM_WIDTH = 320
+STREAM_HEIGHT = 240
+STREAM_FPS = 8
+JPEG_QUALITY = 45
+YOLO_SKIP = 12  # Run YOLO every N frames
 
 # ------------------------
 # Flask setup
 # ------------------------
 app = Flask(__name__)
 CORS(app)
-
-# ------------------------
-# Configuration
-# ------------------------
-CAP_WIDTH = 640
-CAP_HEIGHT = 480
-STREAM_WIDTH = 320
-STREAM_HEIGHT = 240
-STREAM_FPS = 8
-JPEG_QUALITY = 45
-YOLO_SKIP = 12
 
 # ------------------------
 # Load YOLO
@@ -40,79 +40,55 @@ except AttributeError:
     pass
 
 # ------------------------
-# Detect cameras fast (Pi-safe)
+# Detect USB cameras safely
 # ------------------------
-def detect_cameras(max_test=10):
-    devices = glob.glob("/dev/video*")
-    working = []
+def detect_usb_cameras(max_test=5):
+    """Return list of /dev/video indices that can actually be opened."""
+    usb_indices = []
 
-    for dev in devices:
+    for dev in glob.glob("/dev/video*"):
         try:
             idx = int(dev.replace("/dev/video", ""))
-
-            # Quick check using V4L2 info (avoids warnings)
-            dev_name_path = f"/sys/class/video4linux/{os.path.basename(dev)}/name"
-            if os.path.exists(dev_name_path):
-                with open(dev_name_path, "r") as f:
-                    name = f.read().strip().lower()
-                    if not any(k in name for k in ("usb", "camera")):
-                        continue
-
-            # Optional: fast VideoCapture check (0.1s timeout)
-            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            # Quick test to see if this device can open
+            cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            start = time.time()
-            ret = False
-            while time.time() - start < 0.1:
-                ret, _ = cap.read()
-                if ret:
-                    break
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+            ret, _ = cap.read()
             cap.release()
+
             if ret:
-                working.append(idx)
+                usb_indices.append(idx)
                 if DEBUG:
-                    print(f"[DEBUG] Camera detected: /dev/video{idx}")
-
-            if len(working) >= max_test:
+                    print(f"[INFO] Camera /dev/video{idx} detected.")
+            if len(usb_indices) >= max_test:
                 break
-
         except Exception:
-            pass
+            continue
 
-    return working[:max_test]
-
-CAM_DEVICES = detect_cameras()
-if not CAM_DEVICES:
-    print("No cameras detected. Exiting.")
-    sys.exit(1)
+    return usb_indices
 
 # ------------------------
 # Initialize cameras
 # ------------------------
 def init_cams(indices):
     cams = []
-
     for i, idx in enumerate(indices):
-        cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-        dev_name = f"/dev/video{idx}"
-
-        if not cap.isOpened():
-            if DEBUG:
-                print(f"[DEBUG] Failed to open {dev_name}")
-            cap.release()
-            continue
-
+        cap = cv2.VideoCapture(idx, cv2.CAP_ANY)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
 
-        # Warm-up
-        for _ in range(3):
-            cap.read()
+        ret, _ = cap.read()
+        if not ret:
+            cap.release()
+            if DEBUG:
+                print(f"[DEBUG] Camera /dev/video{idx} failed initial read.")
+            continue
 
         cams.append({
             "index": i,
-            "dev": dev_name,
+            "dev": f"/dev/video{idx}",
             "cap": cap,
             "frame": None,
             "detections": [],
@@ -121,15 +97,12 @@ def init_cams(indices):
         })
 
         if DEBUG:
-            print(f"[DEBUG] Initialized camera {i} ({dev_name})")
+            print(f"[DEBUG] Initialized camera {i} ({caps[-1]['dev']})")
 
     return cams
 
-cams = init_cams(CAM_DEVICES)
-cam_map = {cam["index"]: cam for cam in cams}
-
 # ------------------------
-# Asynchronous YOLO function
+# YOLO detection (async)
 # ------------------------
 def run_yolo(cam, frame):
     try:
@@ -145,16 +118,14 @@ def run_yolo(cam, frame):
 
         if DEBUG:
             print(f"[YOLO] Cam {cam['index']} detections: {len(detections)}")
-
     except Exception as e:
-        print(f"YOLO error on cam {cam['index']}: {e}")
+        print(f"[YOLO] Error on cam {cam['index']}: {e}")
 
 # ------------------------
-# Capture & YOLO thread
+# Capture thread
 # ------------------------
 def capture_thread(cam):
     interval = 1.0 / STREAM_FPS
-
     while True:
         start = time.time()
         ret, frame = cam["cap"].read()
@@ -164,7 +135,7 @@ def capture_thread(cam):
 
         cam["frame_count"] += 1
 
-        # Async YOLO on every YOLO_SKIP frame
+        # Run YOLO every YOLO_SKIP frames
         if cam["frame_count"] % YOLO_SKIP == 0:
             threading.Thread(target=run_yolo, args=(cam, frame.copy()), daemon=True).start()
 
@@ -173,10 +144,6 @@ def capture_thread(cam):
 
         elapsed = time.time() - start
         time.sleep(max(0, interval - elapsed))
-
-# Start threads
-for cam in cams:
-    threading.Thread(target=capture_thread, args=(cam,), daemon=True).start()
 
 # ------------------------
 # MJPEG streaming
@@ -223,10 +190,31 @@ def get_detections(cam_idx):
         abort(404)
     with cam["lock"]:
         return jsonify(cam["detections"])
+    
+@app.route("/cameras")
+def cameras_info():
+    """Return detailed info about all initialized cameras."""
+    cam_list = [{"index": cam["index"], "device": cam["dev"]} for cam in cams]
+    return jsonify(cam_list)
 
 # ------------------------
 # Main
 # ------------------------
 if __name__ == "__main__":
-    print(f"Starting Flask server with {len(cams)} cameras...")
+    usb_indices = detect_usb_cameras()
+    if not usb_indices:
+        print("No USB cameras detected. Exiting.")
+        sys.exit(1)
+
+    cams = init_cams(usb_indices)
+    if not cams:
+        print("No cameras could be initialized. Exiting.")
+        sys.exit(1)
+
+    cam_map = {cam["index"]: cam for cam in cams}
+
+    print(f"Starting Flask server with {len(cams)} camera(s)...")
+    for cam in cams:
+        threading.Thread(target=capture_thread, args=(cam,), daemon=True).start()
+
     app.run(host="0.0.0.0", port=5000, threaded=True)
