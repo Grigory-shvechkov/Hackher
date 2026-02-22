@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { page } from "$app/stores";
+  import { goto } from "$app/navigation";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
 
   const serverBase = "http://192.168.255.125:5000";
@@ -14,7 +15,13 @@
 
   function terminatePrint() {
     alert(`Terminating print on camera ${camId}`);
+    console.log(`[DEBUG] Terminate print triggered for camera ${camId}`);
     // TODO: call backend API to terminate print
+  }
+
+  function goHome() {
+    console.log("[DEBUG] Navigating back to home carousel");
+    goto("/");
   }
 
   onMount(() => {
@@ -147,6 +154,21 @@
     padding: 0.5rem 1rem;
     border-left: 2px solid #555;
   }
+
+  .home-button {
+    margin-top: 1rem;
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
+    cursor: pointer;
+    border-radius: 0.25rem;
+    border: none;
+    background: #444;
+    color: white;
+  }
+
+  .home-button:hover {
+    background: #555;
+  }
 </style>
 
 <div class="page-container">
@@ -154,6 +176,7 @@
   <div class="info-box">
     <h2>Camera {camId}</h2>
     <button on:click={terminatePrint}>Terminate Print</button>
+    <button class="home-button" on:click={goHome}>Back to Home</button>
 
     <Accordion.Root type="single" class="w-full" value="item-1">
       <Accordion.Item value="item-1">
