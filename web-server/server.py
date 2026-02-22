@@ -5,6 +5,7 @@ import threading
 import time
 from ultralytics import YOLO
 import sys
+import glob
 
 # ------------------------
 # Debug flag
@@ -20,12 +21,11 @@ CORS(app)
 # ------------------------
 # Configuration
 # ------------------------
-CAM_COUNT = 3
-FRAME_WIDTH = 640       # upscale for better detection
+FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
-JPEG_QUALITY = 75       # better quality for YOLO
+JPEG_QUALITY = 75
 STREAM_FPS = 30
-YOLO_SKIP = 5      
+YOLO_SKIP = 5
 
 # ------------------------
 # Load YOLO
@@ -34,39 +34,64 @@ model = YOLO("./best.pt")
 try:
     model.fuse()
 except AttributeError:
-    pass  # some YOLO versions don't have fuse
+    pass
+
+# ------------------------
+# Auto-detect working USB cameras
+# ------------------------
+def detect_cameras(max_test=10):
+    devices = glob.glob("/dev/video*")
+    working = []
+
+    for dev in devices:
+        cap = cv2.VideoCapture(dev)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                working.append(dev)
+                if DEBUG:
+                    print(f"[DEBUG] Camera detected: {dev}")
+            cap.release()
+    return working[:max_test]
+
+CAM_DEVICES = detect_cameras()
+if not CAM_DEVICES:
+    print("No cameras detected. Exiting.")
+    sys.exit(1)
 
 # ------------------------
 # Initialize cameras
 # ------------------------
-def get_cams(count: int):
+def init_cams(devices):
     cams = []
-    for i in range(count):
-        cap = cv2.VideoCapture(i)
+    for i, dev in enumerate(devices):
+        cap = cv2.VideoCapture(dev)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
         if cap.isOpened():
             cams.append({
                 "index": i,
+                "dev": dev,
                 "cap": cap,
                 "frame": None,
                 "detections": [],
                 "frame_count": 0,
                 "lock": threading.Lock()
             })
-            if DEBUG:
-                print(f"[DEBUG] Camera {i} initialized")
         else:
             cap.release()
+            if DEBUG:
+                print(f"[DEBUG] Failed to open {dev}")
     return cams
 
-cams = get_cams(CAM_COUNT)
+cams = init_cams(CAM_DEVICES)
 cam_map = {cam['index']: cam for cam in cams}
+
 if DEBUG:
-    print(f"[DEBUG] Cameras available: {[cam['index'] for cam in cams]}")
+    print(f"[DEBUG] Cameras initialized: {[cam['dev'] for cam in cams]}")
 
 # ------------------------
-# Capture & YOLO thread per camera
+# Capture & YOLO thread
 # ------------------------
 def capture_thread(cam):
     interval = 1.0 / STREAM_FPS
@@ -78,43 +103,36 @@ def capture_thread(cam):
 
         cam['frame_count'] += 1
 
-        # Run YOLO every YOLO_SKIP frames
+        # YOLO detection every YOLO_SKIP frames
         if cam['frame_count'] % YOLO_SKIP == 0:
             try:
                 results = model.predict(frame, verbose=False)
                 detections = []
                 for box in results[0].boxes:
-                    cls = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    xyxy = box.xyxy[0].tolist()
                     detections.append({
-                        "class": cls,
-                        "confidence": conf,
-                        "bbox": xyxy
+                        "class": int(box.cls[0]),
+                        "confidence": float(box.conf[0]),
+                        "bbox": box.xyxy[0].tolist()
                     })
                 with cam['lock']:
                     cam['detections'] = detections
 
                 if DEBUG:
                     print(f"[YOLO] Cam {cam['index']} Frame {cam['frame_count']}: {len(detections)} detections")
-                    for det in detections:
-                        print(f"  -> Class {det['class']} Conf {det['confidence']:.2f} BBox {det['bbox']}")
-
             except Exception as e:
                 print(f"YOLO error on cam {cam['index']}: {e}")
 
-        # Always update frame
         with cam['lock']:
             cam['frame'] = frame
 
         time.sleep(interval)
 
-# Start threads
+# Start capture threads
 for cam in cams:
     t = threading.Thread(target=capture_thread, args=(cam,), daemon=True)
     t.start()
     if DEBUG:
-        print(f"[DEBUG] Started capture thread for camera {cam['index']}")
+        print(f"[DEBUG] Started capture thread for camera {cam['index']} ({cam['dev']})")
 
 # ------------------------
 # MJPEG streaming generator
@@ -123,7 +141,6 @@ def gen_frames(cam):
     while True:
         with cam['lock']:
             frame = cam['frame']
-
         if frame is None:
             time.sleep(0.05)
             continue
@@ -132,9 +149,8 @@ def gen_frames(cam):
         if not ret:
             continue
 
-        frame_bytes = buffer.tobytes()
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
 # ------------------------
 # Flask routes
@@ -163,8 +179,5 @@ def get_detections(cam_idx):
 # Main
 # ------------------------
 if __name__ == "__main__":
-    if DEBUG:
-        print("[DEBUG] Starting Flask server in DEBUG mode...")
-    else:
-        print("Starting Flask server...")
+    print(f"Starting Flask server with {len(cams)} cameras...")
     app.run(host="0.0.0.0", port=5000, threaded=True)
