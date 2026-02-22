@@ -20,9 +20,9 @@ CAP_HEIGHT = 720
 # Streaming settings
 STREAM_WIDTH = 320
 STREAM_HEIGHT = 240
-STREAM_FPS = 20
+STREAM_FPS = 10
 JPEG_QUALITY = 45
-YOLO_SKIP = 10  # Run YOLO every N frames
+YOLO_SKIP = 12  # Run YOLO every N frames
 
 # ------------------------
 # Flask setup
