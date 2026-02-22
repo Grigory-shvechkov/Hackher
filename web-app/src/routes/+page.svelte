@@ -3,7 +3,7 @@
   import { fade } from "svelte/transition";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
 
-  const serverBase = "http://172.31.88.33:5000";
+  const serverBase = "http://192.168.255.125:5000";
   const CAM_COUNT = 3;
   let currentIndex = 0;
 

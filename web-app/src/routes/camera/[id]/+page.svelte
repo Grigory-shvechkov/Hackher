@@ -4,7 +4,7 @@
   import { goto } from "$app/navigation";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
 
-  const serverBase = "http://172.31.88.33:5000";
+  const serverBase = "http://192.168.255.125:5000";
   const FRAME_WIDTH = 640;  // fixed display width
   const FRAME_HEIGHT = 480; // fixed display height
 
