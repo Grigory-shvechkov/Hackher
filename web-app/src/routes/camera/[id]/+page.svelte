@@ -1,22 +1,24 @@
 <script lang="ts">
-  import { onMount, afterUpdate } from "svelte";
+  import { onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import * as Accordion from "$lib/components/ui/accordion/index.js";
 
   const serverBase = "http://192.168.255.125:5000";
-  const FRAME_WIDTH = 640;
-  const FRAME_HEIGHT = 480;
+  const FRAME_WIDTH = 1280;
+  const FRAME_HEIGHT = 720;
+  const STREAM_WIDTH = 640;
+  const STREAM_HEIGHT = 480;
 
   let camId: number;
-  let threshold = 0.5; // default threshold
+  let threshold = 0.5;
   let recentAlertPhoto: { src: string; detections: any[] } | null = null;
   let alertTimeout: ReturnType<typeof setTimeout> | null = null;
+  let overlayCanvas: HTMLCanvasElement | null = null;
+  let alertCanvas: HTMLCanvasElement | null = null;
 
-  // Reactive statement to read URL params
   $: camId = Number($page.params.id);
 
-  // Optional: read threshold from query string
   $: {
     const t = Number($page.url.searchParams.get("threshold"));
     if (!isNaN(t)) threshold = t;
@@ -24,111 +26,83 @@
 
   function terminatePrint() {
     alert(`Terminating print on camera ${camId}`);
-    // TODO: call backend API to terminate print
   }
 
   function goHome() {
     goto("/");
   }
 
-  let alertCanvas: HTMLCanvasElement | null = null;
-
-  onMount(() => {
-    const canvas = document.getElementById("overlay") as HTMLCanvasElement;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
+  const drawOverlay = async () => {
+    if (!overlayCanvas) return;
+    const ctx = overlayCanvas.getContext("2d");
     if (!ctx) return;
 
-    const video = document.querySelector(`.video-container img`) as HTMLImageElement;
+    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-    const drawLoop = async () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    try {
+      const res = await fetch(`${serverBase}/detections/${camId}`);
+      if (!res.ok) return;
+      const detections = await res.json();
 
-      try {
-        const res = await fetch(`${serverBase}/detections/${camId}`);
-        if (!res.ok) return;
-        const detections = await res.json();
+      const scaleX = overlayCanvas.width / FRAME_WIDTH;
+      const scaleY = overlayCanvas.height / FRAME_HEIGHT;
+      const alertDetections = detections.filter((det: any) => det.confidence >= threshold);
 
-        const scaleX = canvas.width / FRAME_WIDTH;
-        const scaleY = canvas.height / FRAME_HEIGHT;
+      if (alertDetections.length > 0 && !recentAlertPhoto) {
+        recentAlertPhoto = {
+          src: `${serverBase}/video/${camId}?t=${Date.now()}`,
+          detections: alertDetections
+        };
 
-        // Filter detections by threshold
-        const alertDetections = detections.filter((det: any) => det.confidence >= threshold);
-
-        // If any detection passes threshold, snapshot it for 5s
-        if (alertDetections.length > 0 && !recentAlertPhoto) {
-          const img = new Image();
-          img.src = `${serverBase}/video/${camId}?t=${Date.now()}`;
-          recentAlertPhoto = { src: img.src, detections: alertDetections };
-
-          // Clear snapshot after 5 seconds
-          alertTimeout = setTimeout(() => {
-            recentAlertPhoto = null;
-          }, 5000);
-        }
-
-        // Draw live video bounding boxes
-        detections.forEach((det: any) => {
-          if (!det.bbox || det.bbox.length !== 4) return;
-          const [x1, y1, x2, y2] = det.bbox.map(Number);
-
-          ctx.save();
-          ctx.strokeStyle = "lime";
-          ctx.lineWidth = 2;
-          ctx.strokeRect(
-            x1 * scaleX,
-            y1 * scaleY,
-            (x2 - x1) * scaleX,
-            (y2 - y1) * scaleY
-          );
-
-          ctx.fillStyle = "lime";
-          ctx.font = "14px sans-serif";
-          ctx.fillText(
-            `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
-            x1 * scaleX,
-            Math.max(12, y1 * scaleY - 2)
-          );
-          ctx.restore();
-        });
-
-      } catch (err) {
-        console.error("Error fetching detections:", err);
+        if (alertTimeout) clearTimeout(alertTimeout);
+        alertTimeout = setTimeout(() => {
+          recentAlertPhoto = null;
+        }, 5000);
       }
-    };
 
-    drawLoop();
-    const overlayInterval = setInterval(drawLoop, 200);
+      detections.forEach((det: any) => {
+        if (!det.bbox || det.bbox.length !== 4) return;
+        const [x1, y1, x2, y2] = det.bbox.map(Number);
 
-    return () => {
-      clearInterval(overlayInterval);
-      if (alertTimeout) clearTimeout(alertTimeout);
-    };
-  });
+        ctx.strokeStyle = "lime";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
 
-  // Draw bounding boxes on alert snapshot after it updates
-  afterUpdate(() => {
-    if (recentAlertPhoto && alertCanvas) {
+        ctx.fillStyle = "lime";
+        ctx.font = "14px sans-serif";
+        ctx.fillText(
+          `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
+          x1 * scaleX,
+          Math.max(12, y1 * scaleY - 2)
+        );
+      });
+    } catch (err) {
+      console.error("Error fetching detections:", err);
+    }
+  };
+
+  const drawAlertSnapshot = () => {
+    if (!recentAlertPhoto || !alertCanvas) return;
+
+    const img = new Image();
+    img.src = recentAlertPhoto.src;
+    img.onload = () => {
+      if (!alertCanvas) return;
       const ctx = alertCanvas.getContext("2d");
       if (!ctx) return;
+
       ctx.clearRect(0, 0, alertCanvas.width, alertCanvas.height);
+      ctx.drawImage(img, 0, 0, alertCanvas.width, alertCanvas.height);
 
       const scaleX = alertCanvas.width / FRAME_WIDTH;
       const scaleY = alertCanvas.height / FRAME_HEIGHT;
 
-      recentAlertPhoto.detections.forEach((det: any) => {
-        if (!det.bbox || det.bbox.length !== 4) return;
+      recentAlertPhoto!.detections.forEach((det: any) => {
         const [x1, y1, x2, y2] = det.bbox.map(Number);
 
-        ctx.save();
         ctx.strokeStyle = "red";
         ctx.lineWidth = 2;
-        ctx.strokeRect(
-          x1 * scaleX,
-          y1 * scaleY,
-          (x2 - x1) * scaleX,
-          (y2 - y1) * scaleY
-        );
+        ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
 
         ctx.fillStyle = "red";
         ctx.font = "14px sans-serif";
@@ -137,9 +111,19 @@
           x1 * scaleX,
           Math.max(12, y1 * scaleY - 2)
         );
-        ctx.restore();
       });
-    }
+    };
+  };
+
+  onMount(() => {
+    const interval = setInterval(drawOverlay, 200);
+    const alertInterval = setInterval(drawAlertSnapshot, 200);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(alertInterval);
+      if (alertTimeout) clearTimeout(alertTimeout);
+    };
   });
 </script>
 
@@ -169,25 +153,6 @@
     text-align: center;
   }
 
-  .info-box h2 {
-    margin: 0;
-    font-size: 1.8rem;
-  }
-
-  .info-box button {
-    padding: 0.5rem 1rem;
-    font-size: 1rem;
-    cursor: pointer;
-    border-radius: 0.25rem;
-    border: none;
-    background: #444;
-    color: white;
-  }
-
-  .info-box button:hover {
-    background: #555;
-  }
-
   .video-container {
     width: 640px;
     height: 480px;
@@ -195,55 +160,59 @@
     background: black;
     border-radius: 1rem;
     overflow: hidden;
-    display: flex;
-    justify-content: center;
-    align-items: center;
   }
 
   .video-container img,
   .video-container canvas {
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    display: block;
-    border-radius: 1rem;
+    object-fit: fill;
     position: absolute;
     top: 0;
     left: 0;
+    border-radius: 1rem;
   }
 
-  .accordion-trigger {
+  .home-button,
+  .info-box button {
     cursor: pointer;
-    background: #333;
-    padding: 0.5rem;
-    border-radius: 0.25rem;
-    font-weight: bold;
-  }
-
-  .accordion-content {
-    background: #222;
-    padding: 0.5rem 1rem;
-    border-left: 2px solid #555;
-  }
-
-  .home-button {
-    margin-top: auto;
-    padding: 0.5rem 1rem;
-    font-size: 1rem;
-    cursor: pointer;
-    border-radius: 0.25rem;
     border: none;
-    background: #666;
+    border-radius: 0.25rem;
+    background: #444;
     color: white;
+    padding: 0.5rem 1rem;
+    transition: background 0.2s;
   }
 
-  .home-button:hover {
-    background: #777;
+  .home-button:hover,
+  .info-box button:hover {
+    background: #555;
+  }
+
+  .alert-snapshot {
+    position: relative;
+    width: 100%;
+    border-radius: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .alert-snapshot img {
+    width: 100%;
+    border-radius: 0.5rem;
+    display: block;
+  }
+
+  .alert-snapshot canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 0.5rem;
   }
 </style>
 
 <div class="page-container">
-  <!-- Info / Controls -->
   <div class="info-box">
     <h2>Camera {camId}</h2>
     <button on:click={terminatePrint}>Terminate Print</button>
@@ -252,21 +221,16 @@
       <Accordion.Item value="item-1">
         <Accordion.Trigger class="accordion-trigger">More Details</Accordion.Trigger>
         <Accordion.Content class="accordion-content">
-          <p>Current print status: Active</p>
-          <p>Printer temperature: 210°C</p>
-          <p>Filament remaining: 120g</p>
-          <p>Threshold set: {threshold.toFixed(2)}</p>
-
+          <p>Threshold: {threshold.toFixed(2)}</p>
           {#if recentAlertPhoto}
-            <p>Most recent frame over threshold (5s snapshot):</p>
-            <div style="position:relative; width:100%; border-radius:0.5rem; margin-top:0.5rem;">
-              <img src={recentAlertPhoto.src} alt="Alert Snapshot" style="width:100%; border-radius:0.5rem;" />
+            <p>Recent Detection:</p>
+            <div class="alert-snapshot">
+              <img src={recentAlertPhoto.src} alt="Alert Snapshot" />
               <canvas
-                width={FRAME_WIDTH}
-                height={FRAME_HEIGHT}
-                style="position:absolute; top:0; left:0; width:100%; height:100%; border-radius:0.5rem;"
+                width={STREAM_WIDTH}
+                height={STREAM_HEIGHT}
                 bind:this={alertCanvas}
-              />
+              ></canvas>
             </div>
           {/if}
         </Accordion.Content>
@@ -276,9 +240,8 @@
     <button class="home-button" on:click={goHome}>Home / Back to Carousel</button>
   </div>
 
-  <!-- Video Feed -->
   <div class="video-container">
     <img src={`${serverBase}/video/${camId}`} alt={`Camera ${camId}`} />
-    <canvas id="overlay" width={FRAME_WIDTH} height={FRAME_HEIGHT}></canvas>
+    <canvas width={STREAM_WIDTH} height={STREAM_HEIGHT} bind:this={overlayCanvas}></canvas>
   </div>
 </div>
