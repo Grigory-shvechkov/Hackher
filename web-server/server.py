@@ -19,10 +19,17 @@ app = Flask(__name__)
 CORS(app)
 
 # ------------------------
-# Configuration (LOW LATENCY)
+# Configuration
 # ------------------------
-FRAME_WIDTH = 320
-FRAME_HEIGHT = 240
+
+# Camera capture resolution (HIGH for YOLO)
+CAP_WIDTH = 640
+CAP_HEIGHT = 480
+
+# Stream resolution (LOW for MJPEG)
+STREAM_WIDTH = 320
+STREAM_HEIGHT = 240
+
 STREAM_FPS = 8
 JPEG_QUALITY = 45
 YOLO_SKIP = 12
@@ -83,14 +90,14 @@ def init_cams(indices):
             cap.release()
             continue
 
-        # 🔥 Kill OpenCV buffering (CRITICAL)
+        # 🔥 Kill buffering (CRITICAL)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        # Set resolution
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        # High-res capture for YOLO
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
 
-        # Warm-up reads
+        # Warm-up
         for _ in range(3):
             cap.read()
 
@@ -98,7 +105,7 @@ def init_cams(indices):
             "index": i,
             "dev": dev_name,
             "cap": cap,
-            "frame": None,
+            "frame": None,          # full-res frame
             "detections": [],
             "frame_count": 0,
             "lock": threading.Lock()
@@ -126,12 +133,15 @@ def capture_thread(cam):
 
         cam["frame_count"] += 1
 
-        # YOLO every N frames
+        # Run YOLO on HIGH-res frames only
         if cam["frame_count"] % YOLO_SKIP == 0:
             try:
-                # Optional resize for YOLO speed
-                small = cv2.resize(frame, (320, 240))
-                results = model.predict(small, verbose=False)
+                results = model.predict(
+                    frame,
+                    imgsz=640,
+                    conf=0.25,
+                    verbose=False
+                )
 
                 detections = []
                 for box in results[0].boxes:
@@ -150,13 +160,13 @@ def capture_thread(cam):
             except Exception as e:
                 print(f"YOLO error on cam {cam['index']}: {e}")
 
-        # 🔥 Always overwrite frame (never queue)
+        # 🔥 Always overwrite frame (no queue)
         with cam["lock"]:
             cam["frame"] = frame
 
         time.sleep(interval)
 
-# Start capture threads
+# Start threads
 for cam in cams:
     threading.Thread(
         target=capture_thread,
@@ -165,7 +175,7 @@ for cam in cams:
     ).start()
 
 # ------------------------
-# MJPEG streaming generator
+# MJPEG streaming (LOW RES ONLY)
 # ------------------------
 def gen_frames(cam):
     while True:
@@ -176,9 +186,16 @@ def gen_frames(cam):
             time.sleep(0.05)
             continue
 
+        # 🔽 Downscale ONLY for streaming
+        stream_frame = cv2.resize(
+            frame,
+            (STREAM_WIDTH, STREAM_HEIGHT),
+            interpolation=cv2.INTER_LINEAR
+        )
+
         ret, buffer = cv2.imencode(
             ".jpg",
-            frame,
+            stream_frame,
             [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
         )
 
