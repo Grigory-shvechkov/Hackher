@@ -10,8 +10,17 @@
 
   let camId: number;
   let overlayInterval: ReturnType<typeof setInterval>;
+  let threshold = 0.5; // default threshold
 
+  // Get camId from route params
   $: camId = Number($page.params.id);
+
+  // Get threshold from query params
+  $: {
+    const urlParams = new URLSearchParams($page.url.search);
+    const t = urlParams.get("threshold");
+    if (t) threshold = Number(t);
+  }
 
   function terminatePrint() {
     alert(`Terminating print on camera ${camId}`);
@@ -30,6 +39,9 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Keep track of which detections we've alerted on to prevent spam
+    const alertedDetections = new Set<string>();
+
     const drawDetections = async () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -45,6 +57,7 @@
           if (!det.bbox || det.bbox.length !== 4) return;
           const [x1, y1, x2, y2] = det.bbox.map(Number);
 
+          // Draw bounding box
           ctx.strokeStyle = "lime";
           ctx.lineWidth = 2;
           ctx.strokeRect(
@@ -61,6 +74,17 @@
             x1 * scaleX,
             Math.max(0, y1 * scaleY - 2)
           );
+
+          // Alert if detection exceeds threshold (only once per detection)
+          const detKey = `${det.class}-${det.bbox.join(",")}`;
+          if (det.confidence >= threshold && !alertedDetections.has(detKey)) {
+            alert(
+              `Alert! ${det.class} detected with confidence ${(det.confidence * 100).toFixed(
+                1
+              )}% (threshold: ${(threshold * 100).toFixed(1)}%)`
+            );
+            alertedDetections.add(detKey);
+          }
         });
       } catch (err) {
         console.error("Error fetching detections:", err);
