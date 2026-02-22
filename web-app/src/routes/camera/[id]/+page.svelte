@@ -11,6 +11,7 @@
   let camId: number;
   let overlayInterval: ReturnType<typeof setInterval>;
   let threshold = 0.5; // default threshold
+  let alerts: { id: string; message: string }[] = []; // store alerts
 
   // Get camId from route params
   $: camId = Number($page.params.id);
@@ -33,13 +34,17 @@
     goto("/");
   }
 
+  function dismissAlert(id: string) {
+    alerts = alerts.filter(a => a.id !== id);
+  }
+
   onMount(() => {
     const canvas = document.getElementById(`overlay`) as HTMLCanvasElement;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Keep track of which detections we've alerted on to prevent spam
+    // Track which detections we've alerted on
     const alertedDetections = new Set<string>();
 
     const drawDetections = async () => {
@@ -58,7 +63,7 @@
           const [x1, y1, x2, y2] = det.bbox.map(Number);
 
           // Draw bounding box
-          ctx.strokeStyle = "lime";
+          ctx.strokeStyle = det.confidence >= threshold ? "red" : "lime";
           ctx.lineWidth = 2;
           ctx.strokeRect(
             x1 * scaleX,
@@ -67,7 +72,7 @@
             (y2 - y1) * scaleY
           );
 
-          ctx.fillStyle = "lime";
+          ctx.fillStyle = det.confidence >= threshold ? "red" : "lime";
           ctx.font = "12px sans-serif";
           ctx.fillText(
             `${det.class} (${(det.confidence * 100).toFixed(1)}%)`,
@@ -75,14 +80,18 @@
             Math.max(0, y1 * scaleY - 2)
           );
 
-          // Alert if detection exceeds threshold (only once per detection)
+          // Add alert to page if over threshold and not already alerted
           const detKey = `${det.class}-${det.bbox.join(",")}`;
           if (det.confidence >= threshold && !alertedDetections.has(detKey)) {
-            alert(
-              `Alert! ${det.class} detected with confidence ${(det.confidence * 100).toFixed(
-                1
-              )}% (threshold: ${(threshold * 100).toFixed(1)}%)`
-            );
+            alerts = [
+              ...alerts,
+              {
+                id: detKey,
+                message: `${det.class} detected with confidence ${(det.confidence * 100).toFixed(
+                  1
+                )}% (threshold: ${(threshold * 100).toFixed(1)}%)`
+              }
+            ];
             alertedDetections.add(detKey);
           }
         });
@@ -120,6 +129,7 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
+    position: relative;
   }
 
   .info-box h2 {
@@ -164,7 +174,21 @@
     z-index: 10;
   }
 
-  /* Accordion overrides */
+  .alert-box {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: rgba(255, 0, 0, 0.9);
+    color: white;
+    padding: 0.5rem 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    z-index: 100;
+    font-size: 0.9rem;
+    max-width: 250px;
+  }
+
   .accordion-trigger {
     cursor: pointer;
     background: #333;
@@ -202,6 +226,13 @@
     <button on:click={terminatePrint}>Terminate Print</button>
     <button class="home-button" on:click={goHome}>Back to Home</button>
 
+    <!-- Alerts -->
+    {#each alerts as alert (alert.id)}
+      <div class="alert-box" on:click={() => dismissAlert(alert.id)}>
+        {alert.message}
+      </div>
+    {/each}
+
     <Accordion.Root type="single" class="w-full" value="item-1">
       <Accordion.Item value="item-1">
         <Accordion.Trigger class="accordion-trigger">More Details</Accordion.Trigger>
@@ -209,7 +240,6 @@
           <p>Current print status: Active</p>
           <p>Printer temperature: 210°C</p>
           <p>Filament remaining: 120g</p>
-          <!-- Add any other dynamic info you fetch from backend -->
         </Accordion.Content>
       </Accordion.Item>
     </Accordion.Root>
