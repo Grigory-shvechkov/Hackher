@@ -2,10 +2,9 @@
 import cv2
 import time
 
-# List of likely USB camera indices
 USB_CAM_INDICES = [0, 1, 2, 3]
 
-print("Starting USB camera test...")
+print("Starting headless USB camera test...")
 
 for idx in USB_CAM_INDICES:
     print(f"\nTesting camera index {idx}...")
@@ -17,21 +16,15 @@ for idx in USB_CAM_INDICES:
         print(f"Camera {idx} could NOT be opened.")
         continue
 
-    print(f"Camera {idx} opened successfully. Showing feed for 5 seconds...")
-    start_time = time.time()
-
-    while time.time() - start_time < 5:
+    print(f"Camera {idx} opened successfully. Reading 10 frames...")
+    success_count = 0
+    for i in range(10):
         ret, frame = cap.read()
-        if not ret:
-            print(f"Camera {idx} frame read failed!")
-            break
-
-        cv2.imshow(f"Camera {idx}", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        if ret:
+            success_count += 1
+        time.sleep(0.1)
 
     cap.release()
-    cv2.destroyAllWindows()
-    print(f"Camera {idx} test finished.")
+    print(f"Camera {idx} captured {success_count}/10 frames successfully.")
 
 print("\nUSB camera test complete!")
